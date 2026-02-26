@@ -1,5 +1,7 @@
 'use client';
 
+import { useState, useRef, useEffect } from 'react';
+
 interface Song {
   name: string;
   artist: string;
@@ -14,6 +16,9 @@ interface SongCardProps {
   trackNumber?: number;
   isPlaying?: boolean;
   isCurrentTrack?: boolean;
+  onSwipeDiscard?: (song: { title: string; artist: string }) => void;
+  isLoading?: boolean;
+  mode?: 'cara-a' | 'cara-b';
 }
 
 export default function SongCard({
@@ -24,8 +29,20 @@ export default function SongCard({
   trackNumber,
   isPlaying = false,
   isCurrentTrack = false,
+  onSwipeDiscard,
+  isLoading = false,
+  mode,
 }: SongCardProps) {
   const searchQuery = encodeURIComponent(`${song.artist} ${song.name}`);
+
+  // Swipe state
+  const [offsetX, setOffsetX] = useState(0);
+  const [isDragging, setIsDragging] = useState(false);
+  const [isHovering, setIsHovering] = useState(false);
+  const startXRef = useRef(0);
+  const cardRef = useRef<HTMLDivElement>(null);
+
+  const SWIPE_THRESHOLD = 80;
 
   const platforms = [
     {
@@ -75,39 +92,191 @@ export default function SongCard({
     </div>
   );
 
+  // Skeleton component
+  const Skeleton = () => (
+    <div className="card p-4 flex items-center gap-4 overflow-hidden relative">
+      <div className="absolute inset-0 skeleton-shimmer" />
+      <div className="w-8 flex justify-center">
+        <div className="w-6 h-6 rounded bg-white/[0.04]" />
+      </div>
+      <div className="flex-1 min-w-0">
+        <div className="h-4 bg-white/[0.04] rounded w-3/4 mb-2" />
+        <div className="h-3 bg-white/[0.04] rounded w-1/2" />
+      </div>
+      <div className="flex items-center gap-0.5">
+        {[1, 2, 3, 4].map((i) => (
+          <div key={i} className="w-8 h-8 rounded-lg bg-white/[0.04]" />
+        ))}
+      </div>
+      <style jsx>{`
+        .skeleton-shimmer {
+          background: linear-gradient(
+            90deg,
+            transparent 0%,
+            rgba(255, 255, 255, 0.04) 50%,
+            transparent 100%
+          );
+          background-size: 200% 100%;
+          animation: shimmer 1.5s infinite;
+        }
+        @keyframes shimmer {
+          0% { background-position: 200% 0; }
+          100% { background-position: -200% 0; }
+        }
+      `}</style>
+    </div>
+  );
+
+  // Swipe handlers
+  const handleDragStart = (clientX: number) => {
+    if (!onSwipeDiscard || isLoading) return;
+    setIsDragging(true);
+    startXRef.current = clientX;
+  };
+
+  const handleDragMove = (clientX: number) => {
+    if (!isDragging || !onSwipeDiscard) return;
+    const diff = clientX - startXRef.current;
+    // Only allow left swipe (negative values)
+    if (diff < 0) {
+      setOffsetX(diff);
+    }
+  };
+
+  const handleDragEnd = () => {
+    if (!isDragging || !onSwipeDiscard) return;
+    setIsDragging(false);
+
+    if (Math.abs(offsetX) > SWIPE_THRESHOLD) {
+      // Trigger swipe discard
+      onSwipeDiscard({ title: song.name, artist: song.artist });
+    }
+    // Animate back to position
+    setOffsetX(0);
+  };
+
+  // Touch events
+  const handleTouchStart = (e: React.TouchEvent) => {
+    handleDragStart(e.touches[0].clientX);
+  };
+
+  const handleTouchMove = (e: React.TouchEvent) => {
+    handleDragMove(e.touches[0].clientX);
+  };
+
+  const handleTouchEnd = () => {
+    handleDragEnd();
+  };
+
+  // Mouse events
+  const handleMouseDown = (e: React.MouseEvent) => {
+    e.preventDefault();
+    handleDragStart(e.clientX);
+  };
+
+  const handleMouseMove = (e: React.MouseEvent) => {
+    handleDragMove(e.clientX);
+  };
+
+  const handleMouseUp = () => {
+    handleDragEnd();
+  };
+
+  const handleMouseLeave = () => {
+    if (isDragging) {
+      handleDragEnd();
+    }
+    setIsHovering(false);
+  };
+
+  // Calculate discard indicator opacity
+  const discardOpacity = Math.min(Math.abs(offsetX) / SWIPE_THRESHOLD, 1);
+
+  // Show skeleton if loading
+  if (isLoading) {
+    return <Skeleton />;
+  }
+
   // Playlist view with track number
   if (trackNumber !== undefined) {
+    const canSwipe = !!onSwipeDiscard;
+
     return (
       <div
-        onClick={onSelect}
-        className={`card p-4 flex items-center gap-4 cursor-pointer ${isCurrentTrack ? 'border-white/30' : ''}`}
+        ref={cardRef}
+        className="relative"
+        onMouseEnter={() => setIsHovering(true)}
+        onMouseLeave={handleMouseLeave}
       >
-        <div className="w-8 flex justify-center">
-          {isCurrentTrack && isPlaying ? (
-            <PlayingIndicator />
-          ) : (
-            <span className="font-[family-name:var(--font-syne)] text-2xl font-bold text-[#27272A] text-right">
-              {trackNumber}
-            </span>
-          )}
-        </div>
-        <div className="flex-1 min-w-0">
-          <h3 className="font-medium text-[#F0F0F0] truncate">{song.name}</h3>
-          <p className="text-sm text-[#71717A] truncate">{song.artist}</p>
-        </div>
-        <div className="flex items-center gap-0.5">
-          {platforms.map((platform) => (
-            <a
-              key={platform.name}
-              href={platform.url}
-              target="_blank"
-              rel="noopener noreferrer"
-              title={platform.name}
-              className="p-2 rounded-lg text-[#52525B] hover:text-[#F0F0F0] transition-colors"
-            >
-              {platform.icon}
-            </a>
-          ))}
+        {/* Discard indicator */}
+        {canSwipe && (
+          <div
+            className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center justify-center w-8 h-8 rounded-full bg-red-500/20 transition-opacity duration-150"
+            style={{ opacity: discardOpacity }}
+          >
+            <svg className="w-4 h-4 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </div>
+        )}
+
+        <div
+          onClick={onSelect}
+          onTouchStart={canSwipe ? handleTouchStart : undefined}
+          onTouchMove={canSwipe ? handleTouchMove : undefined}
+          onTouchEnd={canSwipe ? handleTouchEnd : undefined}
+          onMouseDown={canSwipe ? handleMouseDown : undefined}
+          onMouseMove={canSwipe && isDragging ? handleMouseMove : undefined}
+          onMouseUp={canSwipe && isDragging ? handleMouseUp : undefined}
+          className={`card p-4 flex items-center gap-4 cursor-pointer ${isCurrentTrack ? 'border-white/30' : ''} ${canSwipe ? 'select-none' : ''}`}
+          style={{
+            transform: `translateX(${offsetX}px)`,
+            transition: isDragging ? 'none' : 'transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1)',
+          }}
+        >
+          <div className="w-8 flex justify-center">
+            {isCurrentTrack && isPlaying ? (
+              <PlayingIndicator />
+            ) : (
+              <span className="font-[family-name:var(--font-syne)] text-2xl font-bold text-[#27272A] text-right">
+                {trackNumber}
+              </span>
+            )}
+          </div>
+          <div className="flex-1 min-w-0">
+            <h3 className="font-medium text-[#F0F0F0] truncate">{song.name}</h3>
+            <p className="text-sm text-[#71717A] truncate">{song.artist}</p>
+          </div>
+          <div className="flex items-center gap-0.5">
+            {platforms.map((platform) => (
+              <a
+                key={platform.name}
+                href={platform.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                title={platform.name}
+                onClick={(e) => e.stopPropagation()}
+                className="p-2 rounded-lg text-[#52525B] hover:text-[#F0F0F0] transition-colors"
+              >
+                {platform.icon}
+              </a>
+            ))}
+            {/* Desktop discard button */}
+            {canSwipe && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onSwipeDiscard({ title: song.name, artist: song.artist });
+                }}
+                className={`p-2 rounded-lg text-[#52525B] hover:text-red-500 transition-all duration-200 ${isHovering ? 'opacity-100' : 'opacity-0'}`}
+                title="Descartar canción"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            )}
+          </div>
         </div>
       </div>
     );

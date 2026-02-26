@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import Stepper from './components/Stepper';
 import SearchInput from './components/SearchInput';
 import SongCard from './components/SongCard';
@@ -10,6 +10,8 @@ interface Song {
   name: string;
   artist: string;
   listeners?: number;
+  isLoading?: boolean;
+  isNew?: boolean;
 }
 
 interface Question {
@@ -22,6 +24,21 @@ interface Answer {
   questionId: number;
   answer: string;
   extra?: string;
+}
+
+interface SubstituteContext {
+  mode: 'cara-a' | 'cara-b';
+  // Cara A:
+  seedSongs?: { title: string; artist: string }[];
+  answers?: string[];
+  analysis?: string;
+  // Cara B:
+  intention?: string;
+}
+
+interface DiscardPopup {
+  songIndex: number;
+  song: { title: string; artist: string };
 }
 
 type AppMode = 'modeA' | 'modeB';
@@ -67,6 +84,13 @@ export default function Home() {
   const [originalPlaylist, setOriginalPlaylist] = useState<Song[]>([]);
   const [noResults, setNoResults] = useState(false);
 
+  // Substitute context
+  const [substituteContext, setSubstituteContext] = useState<SubstituteContext | null>(null);
+
+  // Discard popup for Cara B
+  const [discardPopup, setDiscardPopup] = useState<DiscardPopup | null>(null);
+  const discardPopupTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
   const loading = loadingState !== 'idle';
 
   // Switch mode and reset
@@ -98,7 +122,18 @@ export default function Home() {
     setIsPlaying(false);
     setIsShuffled(false);
     setOriginalPlaylist([]);
+    setSubstituteContext(null);
+    setDiscardPopup(null);
   };
+
+  // Clear discard popup timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (discardPopupTimeoutRef.current) {
+        clearTimeout(discardPopupTimeoutRef.current);
+      }
+    };
+  }, []);
 
   // Mode A handlers
   const handleSearch = async (query: string) => {
@@ -214,6 +249,13 @@ export default function Home() {
       setPlaylist(data.playlist);
       setOriginalPlaylist(data.playlist);
       setIsShuffled(false);
+      // Save substitute context for Cara A
+      setSubstituteContext({
+        mode: 'cara-a',
+        seedSongs: selectedSongs.map(s => ({ title: s.name, artist: s.artist })),
+        answers: combinedAnswers.map(a => a.answer),
+        analysis: analysis,
+      });
       setStep(2);
     } catch (err) {
       const isNetwork = err instanceof Error && (err.message === 'network' || err.message.includes('fetch'));
@@ -295,6 +337,11 @@ export default function Home() {
       setPlaylist(data.playlist);
       setOriginalPlaylist(data.playlist);
       setIsShuffled(false);
+      // Save substitute context for Cara B
+      setSubstituteContext({
+        mode: 'cara-b',
+        intention: intention.trim(),
+      });
       setStepB(1);
     } catch (err) {
       const isNetwork = err instanceof Error && (err.message === 'network' || err.message.includes('fetch'));
@@ -376,6 +423,131 @@ export default function Home() {
 
   const handleTrackSelect = (index: number) => {
     setCurrentTrackIndex(index);
+  };
+
+  // Swipe discard handler
+  const handleSwipeDiscard = async (
+    discardedSong: { title: string; artist: string },
+    discardReason?: 'no-moment' | 'no-style'
+  ) => {
+    if (!substituteContext) return;
+
+    // Find the index of the discarded song
+    const songIndex = playlist.findIndex(
+      s => s.name === discardedSong.title && s.artist === discardedSong.artist
+    );
+    if (songIndex === -1) return;
+
+    // Mark the song as loading
+    setPlaylist(prev => prev.map((s, i) =>
+      i === songIndex ? { ...s, isLoading: true } : s
+    ));
+
+    // Clear any existing popup
+    setDiscardPopup(null);
+    if (discardPopupTimeoutRef.current) {
+      clearTimeout(discardPopupTimeoutRef.current);
+    }
+
+    try {
+      // Build current playlist without discarded song
+      const currentPlaylistForApi = playlist
+        .filter((_, i) => i !== songIndex)
+        .map(s => ({ title: s.name, artist: s.artist }));
+
+      const res = await fetch('/api/substitute', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          mode: substituteContext.mode,
+          discardedSong,
+          currentPlaylist: currentPlaylistForApi,
+          seedSongs: substituteContext.seedSongs,
+          answers: substituteContext.answers,
+          analysis: substituteContext.analysis,
+          intention: substituteContext.intention,
+          discardReason,
+        }),
+      });
+
+      if (!res.ok) throw new Error('network');
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+
+      // Replace the loading song with the new one (with isNew animation flag)
+      setPlaylist(prev => prev.map((s, i) =>
+        i === songIndex ? { name: data.song.name, artist: data.song.artist, isNew: true } : s
+      ));
+
+      // Remove isNew flag after animation
+      setTimeout(() => {
+        setPlaylist(prev => prev.map((s, i) =>
+          i === songIndex ? { ...s, isNew: false } : s
+        ));
+      }, 300);
+
+      // Update original playlist too
+      setOriginalPlaylist(prev => prev.map((s, i) => {
+        const origIndex = prev.findIndex(
+          os => os.name === discardedSong.title && os.artist === discardedSong.artist
+        );
+        return i === origIndex ? { name: data.song.name, artist: data.song.artist } : s;
+      }));
+
+      // If the discarded song was playing, start playing the new one
+      if (songIndex === currentTrackIndex && isPlaying) {
+        // The player will pick up the new song automatically since currentTrackIndex stays the same
+      }
+    } catch (err) {
+      console.error('Error substituting song:', err);
+      // Remove loading state on error
+      setPlaylist(prev => prev.map((s, i) =>
+        i === songIndex ? { ...s, isLoading: false } : s
+      ));
+      setError('No se pudo sustituir la canción, inténtalo de nuevo');
+    }
+  };
+
+  // Handle swipe initiation (shows popup for Cara B)
+  const handleSwipeInit = (song: { title: string; artist: string }) => {
+    const songIndex = playlist.findIndex(
+      s => s.name === song.title && s.artist === song.artist
+    );
+    if (songIndex === -1) return;
+
+    if (substituteContext?.mode === 'cara-b') {
+      // Show popup for Cara B
+      setDiscardPopup({ songIndex, song });
+
+      // Auto-dismiss after 5 seconds
+      if (discardPopupTimeoutRef.current) {
+        clearTimeout(discardPopupTimeoutRef.current);
+      }
+      const capturedSong = song;
+      const capturedIndex = songIndex;
+      discardPopupTimeoutRef.current = setTimeout(() => {
+        setDiscardPopup(currentPopup => {
+          if (currentPopup?.songIndex === capturedIndex) {
+            handleSwipeDiscard(capturedSong);
+            return null;
+          }
+          return currentPopup;
+        });
+      }, 5000);
+    } else {
+      // Cara A: direct substitution
+      handleSwipeDiscard(song);
+    }
+  };
+
+  // Handle popup button click
+  const handleDiscardReasonSelect = (reason: 'no-moment' | 'no-style') => {
+    if (!discardPopup) return;
+    if (discardPopupTimeoutRef.current) {
+      clearTimeout(discardPopupTimeoutRef.current);
+    }
+    handleSwipeDiscard(discardPopup.song, reason);
+    setDiscardPopup(null);
   };
 
   const shufflePlaylist = () => {
@@ -716,7 +888,10 @@ export default function Home() {
                   {playlist.map((song, index) => (
                     <div
                       key={`${song.name}-${song.artist}-${index}`}
-                      className={`animate-fade-in stagger-${Math.min(index + 1, 10)}`}
+                      className={`${song.isNew ? 'song-enter' : ''} ${!song.isNew ? `animate-fade-in stagger-${Math.min(index + 1, 10)}` : ''}`}
+                      style={song.isNew ? {
+                        animation: 'songEnter 0.3s ease-out forwards',
+                      } : undefined}
                     >
                       <SongCard
                         song={song}
@@ -725,6 +900,9 @@ export default function Home() {
                         isCurrentTrack={index === currentTrackIndex}
                         isPlaying={isPlaying}
                         onSelect={() => handleTrackSelect(index)}
+                        onSwipeDiscard={handleSwipeInit}
+                        isLoading={song.isLoading}
+                        mode="cara-a"
                       />
                     </div>
                   ))}
@@ -932,7 +1110,10 @@ export default function Home() {
                   {playlist.map((song, index) => (
                     <div
                       key={`${song.name}-${song.artist}-${index}`}
-                      className={`animate-fade-in stagger-${Math.min(index + 1, 10)}`}
+                      className={`${song.isNew ? 'song-enter' : ''} ${!song.isNew ? `animate-fade-in stagger-${Math.min(index + 1, 10)}` : ''}`}
+                      style={song.isNew ? {
+                        animation: 'songEnter 0.3s ease-out forwards',
+                      } : undefined}
                     >
                       <SongCard
                         song={song}
@@ -941,7 +1122,33 @@ export default function Home() {
                         isCurrentTrack={index === currentTrackIndex}
                         isPlaying={isPlaying}
                         onSelect={() => handleTrackSelect(index)}
+                        onSwipeDiscard={handleSwipeInit}
+                        isLoading={song.isLoading}
+                        mode="cara-b"
                       />
+                      {/* Discard reason popup for Cara B */}
+                      {discardPopup?.songIndex === index && (
+                        <div
+                          className="mt-2 p-3 rounded-lg border border-white/10 bg-[rgba(10,10,11,0.95)] backdrop-blur-sm animate-fade-in-fast"
+                          style={{ animation: 'fadeInFast 0.15s ease-out forwards' }}
+                        >
+                          <p className="text-[#A1A1AA] text-sm mb-2.5">¿Por qué la descartas?</p>
+                          <div className="flex gap-2">
+                            <button
+                              onClick={() => handleDiscardReasonSelect('no-moment')}
+                              className="flex-1 px-3 py-2 rounded-lg border border-white/10 bg-white/5 text-[#E2E8F0] text-xs font-medium hover:bg-white/10 transition-colors"
+                            >
+                              No encaja con el momento
+                            </button>
+                            <button
+                              onClick={() => handleDiscardReasonSelect('no-style')}
+                              className="flex-1 px-3 py-2 rounded-lg border border-white/10 bg-white/5 text-[#E2E8F0] text-xs font-medium hover:bg-white/10 transition-colors"
+                            >
+                              No es mi estilo
+                            </button>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -977,6 +1184,31 @@ export default function Home() {
           </>
         )}
       </div>
+
+      {/* Song enter animation styles */}
+      <style jsx global>{`
+        @keyframes songEnter {
+          from {
+            opacity: 0;
+            transform: translateY(8px);
+          }
+          to {
+            opacity: 1;
+            transform: translateY(0);
+          }
+        }
+        @keyframes fadeInFast {
+          from {
+            opacity: 0;
+          }
+          to {
+            opacity: 1;
+          }
+        }
+        .animate-fade-in-fast {
+          animation: fadeInFast 0.15s ease-out forwards;
+        }
+      `}</style>
 
       {/* Player */}
       {showingPlaylist && playlist.length > 0 && (
