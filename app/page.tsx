@@ -847,6 +847,16 @@ export default function Home() {
           </p>
         </div>
 
+        {/* Intro text */}
+        <div className="text-center mb-6">
+          <h2 className="font-[family-name:var(--font-syne)] text-2xl font-semibold text-[#F0F0F0] mb-1">
+            Descubre música que resuena contigo.
+          </h2>
+          <p className="font-[family-name:var(--font-inter)] text-sm font-normal text-[#71717A]">
+            Parte de canciones que ya amas, o déjate sorprender.
+          </p>
+        </div>
+
         {/* Mode Tabs */}
         <div className="flex justify-center gap-3 mb-8">
           <button
