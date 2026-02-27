@@ -839,12 +839,9 @@ export default function Home() {
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
             </svg>
           </button>
-          <h1 className="font-[family-name:var(--font-syne)] text-[2.5rem] font-bold text-[#F0F0F0] mb-1">
+          <h1 className="font-[family-name:var(--font-syne)] text-[2.5rem] font-bold text-[#F0F0F0]">
             Sonder
           </h1>
-          <p className="text-[#71717A] text-sm">
-            Descubre música que resuena contigo
-          </p>
         </div>
 
         {/* Intro text */}
