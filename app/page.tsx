@@ -41,6 +41,83 @@ interface DiscardPopup {
   song: { title: string; artist: string };
 }
 
+interface SavedPlaylist {
+  id: string;
+  name: string;
+  mode: 'cara-a' | 'cara-b';
+  songs: { title: string; artist: string }[];
+  context: {
+    seedSongs?: { title: string; artist: string }[];
+    answers?: string[];
+    analysis?: string;
+    intention?: string;
+  };
+  createdAt: string;
+}
+
+const STORAGE_KEY = 'sonder-playlists';
+const MAX_PLAYLISTS = 20;
+
+const getDefaultPlaylistName = () => {
+  const now = new Date();
+  const day = now.getDate();
+  const months = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
+  const month = months[now.getMonth()];
+  return `Playlist del ${day} ${month}`;
+};
+
+const loadPlaylists = (): SavedPlaylist[] => {
+  if (typeof window === 'undefined') return [];
+  try {
+    const data = localStorage.getItem(STORAGE_KEY);
+    return data ? JSON.parse(data) : [];
+  } catch {
+    return [];
+  }
+};
+
+const savePlaylists = (playlists: SavedPlaylist[]) => {
+  if (typeof window === 'undefined') return;
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(playlists));
+};
+
+const savePlaylist = (playlist: SavedPlaylist): SavedPlaylist => {
+  const playlists = loadPlaylists();
+  playlists.unshift(playlist);
+  if (playlists.length > MAX_PLAYLISTS) {
+    playlists.pop();
+  }
+  savePlaylists(playlists);
+  return playlist;
+};
+
+const updatePlaylistName = (id: string, name: string) => {
+  const playlists = loadPlaylists();
+  const index = playlists.findIndex(p => p.id === id);
+  if (index !== -1) {
+    playlists[index].name = name;
+    savePlaylists(playlists);
+  }
+};
+
+const deletePlaylist = (id: string) => {
+  const playlists = loadPlaylists();
+  const filtered = playlists.filter(p => p.id !== id);
+  savePlaylists(filtered);
+};
+
+const encodePlaylist = (playlist: SavedPlaylist): string => {
+  return btoa(encodeURIComponent(JSON.stringify(playlist)));
+};
+
+const decodePlaylist = (encoded: string): SavedPlaylist | null => {
+  try {
+    return JSON.parse(decodeURIComponent(atob(encoded)));
+  } catch {
+    return null;
+  }
+};
+
 type AppMode = 'modeA' | 'modeB';
 type LoadingState = 'idle' | 'searching' | 'analyzing' | 'generating' | 'discovering' | 'refining';
 
@@ -91,6 +168,16 @@ export default function Home() {
   const [discardPopup, setDiscardPopup] = useState<DiscardPopup | null>(null);
   const discardPopupTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
+  // Playlist saving states
+  const [currentSavedPlaylist, setCurrentSavedPlaylist] = useState<SavedPlaylist | null>(null);
+  const [playlistName, setPlaylistName] = useState('');
+  const [isEditingName, setIsEditingName] = useState(false);
+  const [showHistoryDrawer, setShowHistoryDrawer] = useState(false);
+  const [savedPlaylists, setSavedPlaylists] = useState<SavedPlaylist[]>([]);
+  const [toastMessage, setToastMessage] = useState('');
+  const [isSharedPlaylist, setIsSharedPlaylist] = useState(false);
+  const nameInputRef = useRef<HTMLInputElement>(null);
+
   const loading = loadingState !== 'idle';
 
   // Switch mode and reset
@@ -134,6 +221,70 @@ export default function Home() {
       }
     };
   }, []);
+
+  // Load shared playlist from URL on mount
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const encodedPlaylist = params.get('playlist');
+    if (encodedPlaylist) {
+      const decoded = decodePlaylist(encodedPlaylist);
+      if (decoded) {
+        setIsSharedPlaylist(true);
+        setPlaylist(decoded.songs.map(s => ({ name: s.title, artist: s.artist })));
+        setOriginalPlaylist(decoded.songs.map(s => ({ name: s.title, artist: s.artist })));
+        setPlaylistName(decoded.name);
+        setCurrentSavedPlaylist(decoded);
+        setSubstituteContext({
+          mode: decoded.mode,
+          seedSongs: decoded.context.seedSongs,
+          answers: decoded.context.answers,
+          analysis: decoded.context.analysis,
+          intention: decoded.context.intention,
+        });
+        if (decoded.mode === 'cara-a') {
+          setMode('modeA');
+          setStep(2);
+        } else {
+          setMode('modeB');
+          setStepB(1);
+        }
+      }
+    }
+  }, []);
+
+  // Load saved playlists on mount and when drawer opens
+  useEffect(() => {
+    if (showHistoryDrawer) {
+      setSavedPlaylists(loadPlaylists());
+    }
+  }, [showHistoryDrawer]);
+
+  // Close drawer on Escape key
+  useEffect(() => {
+    const handleEscape = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && showHistoryDrawer) {
+        setShowHistoryDrawer(false);
+      }
+    };
+    window.addEventListener('keydown', handleEscape);
+    return () => window.removeEventListener('keydown', handleEscape);
+  }, [showHistoryDrawer]);
+
+  // Toast auto-dismiss
+  useEffect(() => {
+    if (toastMessage) {
+      const timer = setTimeout(() => setToastMessage(''), 2000);
+      return () => clearTimeout(timer);
+    }
+  }, [toastMessage]);
+
+  // Focus input when editing name
+  useEffect(() => {
+    if (isEditingName && nameInputRef.current) {
+      nameInputRef.current.focus();
+      nameInputRef.current.select();
+    }
+  }, [isEditingName]);
 
   // Mode A handlers
   const handleSearch = async (query: string) => {
@@ -250,12 +401,15 @@ export default function Home() {
       setOriginalPlaylist(data.playlist);
       setIsShuffled(false);
       // Save substitute context for Cara A
-      setSubstituteContext({
+      const newContext: SubstituteContext = {
         mode: 'cara-a',
         seedSongs: selectedSongs.map(s => ({ title: s.name, artist: s.artist })),
         answers: combinedAnswers.map(a => a.answer),
         analysis: analysis,
-      });
+      };
+      setSubstituteContext(newContext);
+      // Auto-save playlist
+      saveCurrentPlaylist(data.playlist, 'cara-a', newContext);
       setStep(2);
     } catch (err) {
       const isNetwork = err instanceof Error && (err.message === 'network' || err.message.includes('fetch'));
@@ -338,10 +492,13 @@ export default function Home() {
       setOriginalPlaylist(data.playlist);
       setIsShuffled(false);
       // Save substitute context for Cara B
-      setSubstituteContext({
+      const newContext: SubstituteContext = {
         mode: 'cara-b',
         intention: intention.trim(),
-      });
+      };
+      setSubstituteContext(newContext);
+      // Auto-save playlist
+      saveCurrentPlaylist(data.playlist, 'cara-b', newContext);
       setStepB(1);
     } catch (err) {
       const isNetwork = err instanceof Error && (err.message === 'network' || err.message.includes('fetch'));
@@ -550,6 +707,94 @@ export default function Home() {
     setDiscardPopup(null);
   };
 
+  // Save playlist to localStorage
+  const saveCurrentPlaylist = (songs: Song[], playlistMode: 'cara-a' | 'cara-b', context: SubstituteContext) => {
+    const defaultName = getDefaultPlaylistName();
+    const newPlaylist: SavedPlaylist = {
+      id: Date.now().toString(),
+      name: defaultName,
+      mode: playlistMode,
+      songs: songs.map(s => ({ title: s.name, artist: s.artist })),
+      context: {
+        seedSongs: context.seedSongs,
+        answers: context.answers,
+        analysis: context.analysis,
+        intention: context.intention,
+      },
+      createdAt: new Date().toISOString(),
+    };
+    const saved = savePlaylist(newPlaylist);
+    setCurrentSavedPlaylist(saved);
+    setPlaylistName(defaultName);
+    return saved;
+  };
+
+  // Handle name save
+  const handleNameSave = () => {
+    setIsEditingName(false);
+    if (currentSavedPlaylist && playlistName.trim()) {
+      updatePlaylistName(currentSavedPlaylist.id, playlistName.trim());
+      setCurrentSavedPlaylist({ ...currentSavedPlaylist, name: playlistName.trim() });
+    }
+  };
+
+  // Handle name key press
+  const handleNameKeyPress = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter') {
+      handleNameSave();
+    }
+  };
+
+  // Share playlist
+  const handleShare = () => {
+    if (!currentSavedPlaylist) return;
+    const encoded = encodePlaylist(currentSavedPlaylist);
+    const url = `${window.location.origin}${window.location.pathname}?playlist=${encoded}`;
+    navigator.clipboard.writeText(url);
+    setToastMessage('Link copiado ✓');
+  };
+
+  // Load playlist from history
+  const handleLoadFromHistory = (saved: SavedPlaylist) => {
+    setPlaylist(saved.songs.map(s => ({ name: s.title, artist: s.artist })));
+    setOriginalPlaylist(saved.songs.map(s => ({ name: s.title, artist: s.artist })));
+    setPlaylistName(saved.name);
+    setCurrentSavedPlaylist(saved);
+    setSubstituteContext({
+      mode: saved.mode,
+      seedSongs: saved.context.seedSongs,
+      answers: saved.context.answers,
+      analysis: saved.context.analysis,
+      intention: saved.context.intention,
+    });
+    if (saved.mode === 'cara-a') {
+      setMode('modeA');
+      setStep(2);
+    } else {
+      setMode('modeB');
+      setStepB(1);
+    }
+    setShowHistoryDrawer(false);
+    setIsSharedPlaylist(false);
+    // Clear URL if there was a shared playlist
+    if (window.location.search.includes('playlist=')) {
+      window.history.replaceState({}, '', window.location.pathname);
+    }
+  };
+
+  // Delete playlist from history
+  const handleDeleteFromHistory = (id: string) => {
+    deletePlaylist(id);
+    setSavedPlaylists(loadPlaylists());
+  };
+
+  // Clear shared playlist and go to start
+  const handleClearSharedPlaylist = () => {
+    setIsSharedPlaylist(false);
+    window.history.replaceState({}, '', window.location.pathname);
+    handleStartOver();
+  };
+
   const shufflePlaylist = () => {
     if (isShuffled) {
       setPlaylist(originalPlaylist);
@@ -584,7 +829,16 @@ export default function Home() {
 
       <div className="max-w-xl mx-auto px-4 py-14">
         {/* Header */}
-        <div className="text-center mb-6 animate-fade-in">
+        <div className="relative text-center mb-6 animate-fade-in">
+          <button
+            onClick={() => setShowHistoryDrawer(true)}
+            className="absolute right-0 top-1/2 -translate-y-1/2 p-2 rounded-lg text-[#52525B] hover:text-[#F0F0F0] transition-colors"
+            title="Historial de playlists"
+          >
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+          </button>
           <h1 className="font-[family-name:var(--font-syne)] text-[2.5rem] font-bold text-[#F0F0F0] mb-1">
             Sonder
           </h1>
@@ -875,14 +1129,56 @@ export default function Home() {
             {/* Step 2: Playlist (Mode A) */}
             {step === 2 && (
               <div className="space-y-5 animate-fade-in pb-24">
-                <div className="text-center mb-6">
-                  <h2 className="text-lg font-medium text-[#F0F0F0] mb-1">
-                    Tu Playlist
-                  </h2>
-                  <p className="text-[#71717A] text-sm">
-                    {playlist.length} canciones curadas para ti
-                  </p>
+                {/* Shared playlist banner */}
+                {isSharedPlaylist && (
+                  <div className="p-3 rounded-lg border border-white/10 bg-white/[0.02] flex items-center justify-between gap-3 animate-fade-in">
+                    <span className="text-[#A1A1AA] text-sm">Playlist compartida por alguien</span>
+                    <button
+                      onClick={handleClearSharedPlaylist}
+                      className="text-[#EF4444] text-sm font-medium hover:underline whitespace-nowrap"
+                    >
+                      Genera la tuya →
+                    </button>
+                  </div>
+                )}
+
+                {/* Editable name and share button */}
+                <div className="flex items-center justify-center gap-3">
+                  <div className="flex items-center gap-2 group">
+                    {isEditingName ? (
+                      <input
+                        ref={nameInputRef}
+                        type="text"
+                        value={playlistName}
+                        onChange={(e) => setPlaylistName(e.target.value)}
+                        onBlur={handleNameSave}
+                        onKeyDown={handleNameKeyPress}
+                        className="bg-transparent text-lg font-medium text-[#F0F0F0] text-center border border-white/10 rounded-lg px-3 py-1 outline-none focus:border-white/20"
+                        style={{ minWidth: '200px' }}
+                      />
+                    ) : (
+                      <button
+                        onClick={() => setIsEditingName(true)}
+                        className="flex items-center gap-2 text-lg font-medium text-[#F0F0F0] hover:text-white transition-colors"
+                      >
+                        <span>{playlistName || 'Tu Playlist'}</span>
+                        <svg className="w-4 h-4 text-[#52525B] opacity-0 group-hover:opacity-100 transition-opacity" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                        </svg>
+                      </button>
+                    )}
+                  </div>
+                  <button
+                    onClick={handleShare}
+                    className="text-[#52525B] hover:text-[#F0F0F0] text-sm transition-colors whitespace-nowrap"
+                  >
+                    Compartir →
+                  </button>
                 </div>
+
+                <p className="text-[#71717A] text-sm text-center">
+                  {playlist.length} canciones curadas para ti
+                </p>
 
                 <div className="space-y-2">
                   {playlist.map((song, index) => (
@@ -1097,14 +1393,56 @@ export default function Home() {
             {/* Step 1: Playlist (Mode B) */}
             {stepB === 1 && (
               <div className="space-y-5 animate-fade-in pb-24">
-                <div className="text-center mb-6">
-                  <h2 className="text-lg font-medium text-[#F0F0F0] mb-1">
-                    Tu Playlist
-                  </h2>
-                  <p className="text-[#71717A] text-sm">
-                    {playlist.length} canciones para ti
-                  </p>
+                {/* Shared playlist banner */}
+                {isSharedPlaylist && (
+                  <div className="p-3 rounded-lg border border-white/10 bg-white/[0.02] flex items-center justify-between gap-3 animate-fade-in">
+                    <span className="text-[#A1A1AA] text-sm">Playlist compartida por alguien</span>
+                    <button
+                      onClick={handleClearSharedPlaylist}
+                      className="text-[#3B82F6] text-sm font-medium hover:underline whitespace-nowrap"
+                    >
+                      Genera la tuya →
+                    </button>
+                  </div>
+                )}
+
+                {/* Editable name and share button */}
+                <div className="flex items-center justify-center gap-3">
+                  <div className="flex items-center gap-2 group">
+                    {isEditingName ? (
+                      <input
+                        ref={nameInputRef}
+                        type="text"
+                        value={playlistName}
+                        onChange={(e) => setPlaylistName(e.target.value)}
+                        onBlur={handleNameSave}
+                        onKeyDown={handleNameKeyPress}
+                        className="bg-transparent text-lg font-medium text-[#F0F0F0] text-center border border-white/10 rounded-lg px-3 py-1 outline-none focus:border-white/20"
+                        style={{ minWidth: '200px' }}
+                      />
+                    ) : (
+                      <button
+                        onClick={() => setIsEditingName(true)}
+                        className="flex items-center gap-2 text-lg font-medium text-[#F0F0F0] hover:text-white transition-colors"
+                      >
+                        <span>{playlistName || 'Tu Playlist'}</span>
+                        <svg className="w-4 h-4 text-[#52525B] opacity-0 group-hover:opacity-100 transition-opacity" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                        </svg>
+                      </button>
+                    )}
+                  </div>
+                  <button
+                    onClick={handleShare}
+                    className="text-[#52525B] hover:text-[#F0F0F0] text-sm transition-colors whitespace-nowrap"
+                  >
+                    Compartir →
+                  </button>
                 </div>
+
+                <p className="text-[#71717A] text-sm text-center">
+                  {playlist.length} canciones para ti
+                </p>
 
                 <div className="space-y-2">
                   {playlist.map((song, index) => (
@@ -1185,6 +1523,86 @@ export default function Home() {
         )}
       </div>
 
+      {/* Toast */}
+      {toastMessage && (
+        <div
+          className="fixed top-5 left-1/2 -translate-x-1/2 px-4 py-2.5 rounded-xl border border-white/10 bg-[rgba(10,10,11,0.95)] backdrop-blur-md text-[#F0F0F0] text-sm font-medium z-50 animate-toast"
+        >
+          {toastMessage}
+        </div>
+      )}
+
+      {/* History Drawer */}
+      {showHistoryDrawer && (
+        <>
+          {/* Overlay */}
+          <div
+            className="fixed inset-0 bg-black/60 z-40 animate-fade-in"
+            onClick={() => setShowHistoryDrawer(false)}
+          />
+          {/* Drawer */}
+          <div className="fixed top-0 right-0 h-full w-full sm:w-80 bg-[#0A0A0B] border-l border-white/[0.07] z-50 animate-slide-in-right overflow-y-auto">
+            <div className="p-5">
+              <div className="flex items-center justify-between mb-6">
+                <h3 className="text-lg font-medium text-[#F0F0F0]">Historial</h3>
+                <button
+                  onClick={() => setShowHistoryDrawer(false)}
+                  className="p-2 rounded-lg text-[#52525B] hover:text-[#F0F0F0] transition-colors"
+                >
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+
+              {savedPlaylists.length === 0 ? (
+                <p className="text-[#71717A] text-sm text-center py-8">
+                  Aún no has generado ninguna playlist
+                </p>
+              ) : (
+                <div className="space-y-3">
+                  {savedPlaylists.map((saved) => (
+                    <div
+                      key={saved.id}
+                      className="card p-4 cursor-pointer hover:border-white/20 transition-colors group"
+                      onClick={() => handleLoadFromHistory(saved)}
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="flex-1 min-w-0">
+                          <h4 className="font-medium text-[#F0F0F0] truncate">{saved.name}</h4>
+                          <div className="flex items-center gap-2 mt-1">
+                            <span className={`text-xs px-2 py-0.5 rounded-md ${saved.mode === 'cara-a' ? 'bg-[rgba(239,68,68,0.1)] text-[#EF4444]' : 'bg-[rgba(59,130,246,0.1)] text-[#3B82F6]'}`}>
+                              {saved.mode === 'cara-a' ? 'Cara A' : 'Cara B'}
+                            </span>
+                            <span className="text-xs text-[#52525B]">
+                              {saved.songs.length} canciones
+                            </span>
+                          </div>
+                          <p className="text-xs text-[#52525B] mt-1">
+                            {new Date(saved.createdAt).toLocaleDateString('es-ES', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                          </p>
+                        </div>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleDeleteFromHistory(saved.id);
+                          }}
+                          className="p-1.5 rounded-lg text-[#52525B] hover:text-red-500 opacity-0 group-hover:opacity-100 transition-all"
+                        >
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                          </svg>
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </>
+      )}
+
       {/* Song enter animation styles */}
       <style jsx global>{`
         @keyframes songEnter {
@@ -1207,6 +1625,30 @@ export default function Home() {
         }
         .animate-fade-in-fast {
           animation: fadeInFast 0.15s ease-out forwards;
+        }
+        @keyframes slideInRight {
+          from {
+            transform: translateX(100%);
+          }
+          to {
+            transform: translateX(0);
+          }
+        }
+        .animate-slide-in-right {
+          animation: slideInRight 0.25s ease-out forwards;
+        }
+        @keyframes toastIn {
+          from {
+            opacity: 0;
+            transform: translateX(-50%) translateY(-10px);
+          }
+          to {
+            opacity: 1;
+            transform: translateX(-50%) translateY(0);
+          }
+        }
+        .animate-toast {
+          animation: toastIn 0.2s ease-out forwards;
         }
       `}</style>
 

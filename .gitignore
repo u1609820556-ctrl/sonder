@@ -49,4 +49,7 @@ next-env.d.ts
 # claude code settings (contains local permissions)
 .claude/
 
+# Internal documentation - NEVER commit
+CLAUDE.md
+
 .vercel
