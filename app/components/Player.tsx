@@ -237,6 +237,42 @@ export default function Player({ playlist, currentIndex, onIndexChange, onPlayin
     }
   }, [currentVideoId, isReady]);
 
+  // Media Session API for lock screen / notification controls
+  useEffect(() => {
+    if (!currentSong || !('mediaSession' in navigator)) return;
+
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: currentSong.name,
+      artist: currentSong.artist,
+      artwork: [
+        { src: '/icon-192.png', sizes: '192x192', type: 'image/png' },
+        { src: '/icon-512.png', sizes: '512x512', type: 'image/png' }
+      ]
+    });
+
+    navigator.mediaSession.setActionHandler('play', () => {
+      playerRef.current?.playVideo();
+    });
+
+    navigator.mediaSession.setActionHandler('pause', () => {
+      playerRef.current?.pauseVideo();
+    });
+
+    navigator.mediaSession.setActionHandler('nexttrack', () => {
+      const nextIndex = (currentIndex + 1) % playlist.length;
+      onIndexChange(nextIndex);
+    });
+
+    navigator.mediaSession.setActionHandler('previoustrack', () => {
+      if (progress > 3) {
+        playerRef.current?.seekTo(0, true);
+      } else {
+        const prevIndex = currentIndex === 0 ? playlist.length - 1 : currentIndex - 1;
+        onIndexChange(prevIndex);
+      }
+    });
+  }, [currentSong, currentIndex, playlist.length, onIndexChange, progress]);
+
   // Progress tracking
   useEffect(() => {
     if (isPlaying && playerRef.current) {
